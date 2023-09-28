@@ -1,0 +1,12 @@
+.terraform/*
+.terraform.lock.*
+
+# .tfstate files
+*.tfstate
+*.tfstate.*
+
+output_values.json
+*.zip
+certs
+ovpn
+.DS_Store

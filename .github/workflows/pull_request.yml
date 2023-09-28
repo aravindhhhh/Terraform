@@ -1,0 +1,285 @@
+name: "Pull Request"
+
+on:
+  pull_request:
+    branches: [main]
+    types: [opened, reopened, synchronize]
+  
+jobs: 
+  label: 
+    name: Label Pull Request
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@master
+      - uses: actions/labeler@v4
+        with:
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+          dot: true
+        
+  validate:
+    name: Lint, Fmt, Validate
+    if: ${{ ! github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ github.ref }}-tf-plan
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@master
+      - uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.4.6
+          terraform_wrapper: true
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          role-to-assume: arn:aws:iam::058757983140:role/alix-dev-github-actions
+          aws-region: us-east-1
+          mask-aws-account-id: false
+
+      - name: Terraform fmt
+        id: fmt
+        run: terraform fmt -check
+        continue-on-error: false
+
+      - name: Terraform Init
+        id: init
+        run: terraform init
+
+      - name: Terraform Validate
+        id: validate
+        run: terraform validate -no-color
+        continue-on-error: false
+  
+  plan_dev:
+    name: Plan Dev Environment
+    if: ${{ ! github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ github.ref }}-tf-dev
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@master
+      - uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.4.6
+          terraform_wrapper: true
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          role-to-assume: arn:aws:iam::058757983140:role/alix-dev-github-actions
+          aws-region: us-east-1
+          mask-aws-account-id: false
+      
+      - name: Terraform Init
+        id: init
+        run: terraform init
+
+      - name: Terraform Plan
+        id: plan
+        env: 
+          TF_WORKSPACE: dev
+          TF_VAR_slack_webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: terraform plan -no-color | grep -E '(^.*[#~+-] .*|^[[:punct:]]|Plan)'
+        
+        continue-on-error: true
+
+      - name: Find Comment
+        uses: peter-evans/find-comment@v2
+        id: fc
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: 'github-actions[bot]'
+          body-includes: "Terraform Dev"
+
+      - name: Create comment
+        if: steps.fc.outputs.comment-id == ''
+        uses: peter-evans/create-or-update-comment@v3
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          body: |
+            ### Terraform Dev Plan Results
+            <details><summary>Plan</summary>
+            
+            ```
+            ${{ steps.plan.outputs.stdout }}
+            ```
+            </details>
+          reactions: 'eyes'
+
+      - name: Update comment
+        if: steps.fc.outputs.comment-id != ''
+        uses: peter-evans/create-or-update-comment@v3
+        with:
+          comment-id: ${{ steps.fc.outputs.comment-id }}
+          body: |
+            ### Terraform Dev Plan Results
+            <details><summary>Plan</summary>
+            
+            ```
+            ${{ steps.plan.outputs.stdout }}
+            ```
+            </details>
+          reactions: 'eyes'
+          edit-mode: replace
+  
+  plan_staging:
+    name: Plan Staging Environment
+    if: ${{ ! github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ github.ref }}-tf-staging
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@master
+      - uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.4.6
+          terraform_wrapper: true
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          role-to-assume: arn:aws:iam::058757983140:role/alix-staging-github-actions
+          aws-region: us-east-1
+          mask-aws-account-id: false
+      
+      - name: Terraform Init
+        id: init
+        run: terraform init
+
+      - name: Terraform Plan
+        id: plan
+        env: 
+          TF_WORKSPACE: staging
+          TF_VAR_slack_webhook_url: "https://hooks.slack.com/services/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"
+        run: terraform plan -no-color | grep -E '(^.*[#~+-] .*|^[[:punct:]]|Plan)'
+        continue-on-error: true
+
+      - name: Find Comment
+        uses: peter-evans/find-comment@v2
+        id: fc
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: 'github-actions[bot]'
+          body-includes: "Terraform Staging"
+
+      - name: Create comment
+        if: steps.fc.outputs.comment-id == ''
+        uses: peter-evans/create-or-update-comment@v3
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          body: |
+            ### Terraform Staging Plan Results
+            <details><summary>Plan</summary>
+            
+            ```
+            ${{ steps.plan.outputs.stdout }}
+            ```
+            </details>
+          reactions: 'eyes'
+
+      - name: Update comment
+        if: steps.fc.outputs.comment-id != ''
+        uses: peter-evans/create-or-update-comment@v3
+        with:
+          comment-id: ${{ steps.fc.outputs.comment-id }}
+          body: |
+            ### Terraform Staging Plan Results
+            <details><summary>Plan</summary>
+            
+            ```
+            ${{ steps.plan.outputs.stdout }}
+            ```
+            </details>
+          reactions: 'eyes'
+          edit-mode: replace
+
+  plan_production:
+    name: Plan Production Environment
+    if: ${{ ! github.event.pull_request.draft }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: ${{ github.ref }}-tf-production
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@master
+      - uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.4.6
+          terraform_wrapper: true
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          role-to-assume: arn:aws:iam::058757983140:role/alix-production-github-actions
+          aws-region: us-east-1
+          mask-aws-account-id: false
+      
+      - name: Terraform Init
+        id: init
+        run: terraform init
+
+      - name: Terraform Plan
+        id: plan
+        env: 
+          TF_WORKSPACE: production
+          TF_VAR_dd_api_key: ${{ secrets.DD_API_KEY }}
+          TF_VAR_slack_webhook_url: "https://hooks.slack.com/services/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"
+        run: terraform plan -no-color | grep -E '(^.*[#~+-] .*|^[[:punct:]]|Plan)'
+        continue-on-error: true
+
+      - name: Find Comment
+        uses: peter-evans/find-comment@v2
+        id: fc
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: 'github-actions[bot]'
+          body-includes: "Terraform Production"
+
+      - name: Create comment
+        if: steps.fc.outputs.comment-id == ''
+        uses: peter-evans/create-or-update-comment@v3
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          body: |
+            ### Terraform Production Plan Results
+            <details><summary>Plan</summary>
+            
+            ```
+            ${{ steps.plan.outputs.stdout }}
+            ```
+            </details>
+          reactions: 'eyes'
+
+      - name: Update comment
+        if: steps.fc.outputs.comment-id != ''
+        uses: peter-evans/create-or-update-comment@v3
+        with:
+          comment-id: ${{ steps.fc.outputs.comment-id }}
+          body: |
+            ### Terraform Production Plan Results
+            <details><summary>Plan</summary>
+
+            ```
+            ${{ steps.plan.outputs.stdout }}
+            ```
+            </details>
+          reactions: 'eyes'
+          edit-mode: replace

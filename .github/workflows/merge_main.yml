@@ -1,0 +1,52 @@
+name: "Deploy Staging"
+
+on:
+  push:
+    branches:
+      - main
+  
+jobs: 
+ apply_staging:
+    name: Apply Staging Environment
+    runs-on: ubuntu-latest
+    concurrency:
+      group: staging
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@master
+      - uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.4.6
+          terraform_wrapper: true
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          role-to-assume: arn:aws:iam::058757983140:role/alix-staging-github-actions
+          aws-region: us-east-1
+          mask-aws-account-id: false
+      
+      - name: Terraform Init
+        id: init
+        run: terraform init
+
+      - name: Terraform Apply
+        id: apply
+        env: 
+          TF_WORKSPACE: staging
+          TF_VAR_dd_api_key: ${{ secrets.DD_API_KEY }}
+          TF_VAR_slack_webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: terraform apply -no-color --auto-approve
+        continue-on-error: false
+
+      - name: Upload VPN Profiles
+        id: vpn-profiles
+        env: 
+          bucket: alix-terraform
+          vpn_directory: ovpn
+        run: aws s3 cp --acl bucket-owner-full-control --recursive ${{ env.vpn_directory }}/. s3://${{ env.bucket }}/vpn/staging/
+
+

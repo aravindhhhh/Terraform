@@ -1,0 +1,88 @@
+name: "Deploy Dev"
+
+on:
+  pull_request_review:
+    types: [submitted]
+jobs: 
+  apply_dev:
+    name: Apply Dev Environment
+    if: github.event.review.state == 'approved'
+    runs-on: ubuntu-latest
+    concurrency:
+      group: dev
+      cancel-in-progress: true
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@master
+      - uses: hashicorp/setup-terraform@v2
+        with:
+          terraform_version: 1.4.6
+          terraform_wrapper: true
+
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v1
+        with:
+          role-to-assume: arn:aws:iam::058757983140:role/alix-production-github-actions
+          aws-region: us-east-1
+          mask-aws-account-id: false
+      
+      - name: Terraform Init
+        id: init
+        run: terraform init
+
+      - name: Terraform Apply
+        id: apply
+        env: 
+          TF_WORKSPACE: dev
+          TF_VAR_dd_api_key: ${{ secrets.DD_API_KEY }}
+          TF_VAR_slack_webhook_url: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: terraform apply -no-color --auto-approve | grep -E '(^.*[#~+-] .*|^[[:punct:]]|Apply)'
+        continue-on-error: true
+
+      - name: Upload VPN Profiles
+        id: vpn-profiles
+        env: 
+          bucket: alix-terraform
+          vpn_directory: ovpn
+        run: aws s3 cp --acl bucket-owner-full-control --recursive ${{ env.vpn_directory }}/. s3://${{ env.bucket }}/vpn/dev/
+
+      - name: Find Comment
+        uses: peter-evans/find-comment@v2
+        id: fc
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          comment-author: 'github-actions[bot]'
+          body-includes: "Dev Apply"
+
+      - name: Create comment
+        if: steps.fc.outputs.comment-id == ''
+        uses: peter-evans/create-or-update-comment@v3
+        with:
+          issue-number: ${{ github.event.pull_request.number }}
+          body: |
+            ### Dev Apply Results
+            <details><summary>Apply</summary>
+            
+            ```
+            ${{ steps.apply.outputs.stdout }}
+            ```
+            </details>
+          reactions: 'eyes'
+
+      - name: Update comment
+        if: steps.fc.outputs.comment-id != ''
+        uses: peter-evans/create-or-update-comment@v3
+        with:
+          comment-id: ${{ steps.fc.outputs.comment-id }}
+          body: |
+            ### Dev Apply Results
+            <details><summary>Apply</summary>
+            
+            ```
+            ${{ steps.apply.outputs.stdout }}
+            ```
+            </details>
+          reactions: 'eyes'
+          edit-mode: replace

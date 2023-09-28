@@ -1,0 +1,5 @@
+infrastructure: '*.tf'
+config: '*.tfvars'
+ci: .github/**/*
+docs: README.md
+
